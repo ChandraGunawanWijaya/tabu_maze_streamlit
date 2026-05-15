@@ -1,6 +1,6 @@
 # ============================================================
 #  TABU SEARCH MAZE — Streamlit Version
-#  Jalankan dengan: streamlit run tabu_maze_streamlit.py
+#  Jalankan: streamlit run tabu_maze_streamlit.py
 # ============================================================
 
 import random
@@ -8,42 +8,53 @@ import gc
 import io
 import time
 
-import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import numpy as np
 import streamlit as st
 
-# ── Konfigurasi Halaman ───────────────────────────────────────
+plt.rcParams['figure.dpi'] = 80
+
 st.set_page_config(
     page_title="Tabu Search Maze",
     page_icon="🧩",
     layout="wide",
 )
 
-plt.rcParams['figure.dpi'] = 80
 
-
-# ── 1. Generate Maze ─────────────────────────────────────────
+# ── 1. Generate Maze (iteratif, hindari RecursionError) ───────
 def generate_maze(n, seed=42):
     random.seed(seed)
     grid = np.ones((n, n), dtype=np.uint8)
     visited = set()
 
-    def carve(r, c):
-        visited.add((r, c))
-        grid[r, c] = 0
+    stack = [(1, 1)]
+    visited.add((1, 1))
+    grid[1, 1] = 0
+
+    while stack:
+        r, c = stack[-1]
         dirs = [(0, 2), (0, -2), (2, 0), (-2, 0)]
         random.shuffle(dirs)
+        moved = False
         for dr, dc in dirs:
             nr, nc = r + dr, c + dc
             if 0 <= nr < n and 0 <= nc < n and (nr, nc) not in visited:
+                visited.add((nr, nc))
                 grid[r + dr // 2, c + dc // 2] = 0
-                carve(nr, nc)
+                grid[nr, nc] = 0
+                stack.append((nr, nc))
+                moved = True
+                break
+        if not moved:
+            stack.pop()
 
-    carve(1, 1)
-    grid[0, 1] = grid[1, 1] = grid[n - 1, n - 2] = grid[n - 2, n - 2] = 0
+    grid[0, 1] = 0
+    grid[1, 1] = 0
+    grid[n - 1, n - 2] = 0
+    grid[n - 2, n - 2] = 0
     return grid
 
 
@@ -112,7 +123,7 @@ def tabu_search_maze(grid, tabu_size=50, max_iter=200_000):
     return [], snapshots
 
 
-# ── 3. Precompute & Render ────────────────────────────────────
+# ── 3. Precompute Visited ─────────────────────────────────────
 def precompute_visited(snapshots):
     result = []
     cumulative = set()
@@ -122,6 +133,7 @@ def precompute_visited(snapshots):
     return result
 
 
+# ── 4. Render Frame ───────────────────────────────────────────
 COLOR = {
     'wall':    [0.07, 0.07, 0.07],
     'path':    [0.20, 0.78, 0.40],
@@ -136,13 +148,14 @@ COLOR = {
 def make_png(grid, snap, visited_frame, idx, total):
     rows, cols = grid.shape
     img = np.ones((rows, cols, 3), dtype=np.float32) * 0.95
-    img[grid == 1] = COLOR['wall']
 
+    img[grid == 1] = COLOR['wall']
     for r, c in visited_frame:
         if grid[r, c] == 0:
             img[r, c] = COLOR['visited']
     for r, c in set(snap['tabu_list']):
-        img[r, c] = COLOR['tabu']
+        if 0 <= r < rows and 0 <= c < cols:
+            img[r, c] = COLOR['tabu']
     for r, c in snap['path']:
         img[r, c] = COLOR['path']
 
@@ -151,7 +164,7 @@ def make_png(grid, snap, visited_frame, idx, total):
     img[0, 1] = COLOR['start']
     img[rows - 1, cols - 2] = COLOR['end']
 
-    sz = max(4, rows // 4)
+    sz = max(4, min(rows // 3, 10))
     fig, ax = plt.subplots(figsize=(sz, sz))
     ax.imshow(img, interpolation='nearest')
     ax.set_xticks([])
@@ -159,8 +172,8 @@ def make_png(grid, snap, visited_frame, idx, total):
 
     warna = {'move': 'green', 'backtrack': 'red', 'done': 'blue'}
     ax.set_title(
-        f"Frame {idx + 1}/{total} | {snap['action'].upper()} | "
-        f"Path: {len(snap['path'])} | Tabu: {len(snap['tabu_list'])}",
+        f"Frame {idx + 1}/{total}  |  {snap['action'].upper()}  |  "
+        f"Path: {len(snap['path'])}  |  Tabu: {len(snap['tabu_list'])}",
         fontsize=9,
         color=warna.get(snap['action'], 'black')
     )
@@ -185,151 +198,154 @@ def make_png(grid, snap, visited_frame, idx, total):
     return buf.read()
 
 
-# ── 4. Session State Init ─────────────────────────────────────
-if 'snapshots' not in st.session_state:
-    st.session_state.snapshots = None
-if 'grid' not in st.session_state:
-    st.session_state.grid = None
-if 'vc' not in st.session_state:
-    st.session_state.vc = None
-if 'frame_idx' not in st.session_state:
-    st.session_state.frame_idx = 0
-if 'info' not in st.session_state:
-    st.session_state.info = '*Klik Generate untuk memulai...*'
+# ── 5. Session State Init ─────────────────────────────────────
+for key, val in {
+    'snapshots': None,
+    'grid': None,
+    'vc': None,
+    'frame_idx': 0,
+    'info': '*Klik **Generate** untuk memulai...*',
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
 
 
-# ── 5. UI ─────────────────────────────────────────────────────
-st.title("🧩 Tabu Search Maze")
-
-# Sidebar
+# ── 6. Sidebar ────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Pengaturan")
 
-    size_map = {'10×10': 11, '21×21': 21, '31×31': 31}
+    size_map = {'11x11': 11, '21x21': 21, '31x31': 31}
     size_label = st.radio("Ukuran Maze", list(size_map.keys()), index=0)
     n = size_map[size_label]
 
     tabu_size = st.slider("Tabu Size", min_value=5, max_value=200, value=30, step=5)
-    seed = st.number_input("Seed", min_value=0, max_value=9999, value=42)
-    speed = st.slider("Kecepatan Play (langkah/frame)", min_value=1, max_value=50, value=10)
+    seed = int(st.number_input("Seed", min_value=0, max_value=9999, value=42, step=1))
+    speed = st.slider("Langkah per frame (Auto-Play)", min_value=1, max_value=50, value=10)
 
     st.divider()
 
-    if st.button("🔄 Generate", type="primary", use_container_width=True):
-        with st.spinner("⏳ Running Tabu Search..."):
-            maze = generate_maze(n, seed=int(seed))
+    generate_clicked = st.button("Generate", type="primary", use_container_width=True)
+
+    st.divider()
+    st.markdown("""
+**Legenda Warna**
+- Kuning: Posisi Sekarang
+- Hijau: Path Aktif
+- Merah muda: Node Tabu
+- Ungu muda: Visited
+- Hijau tua: Start
+- Merah: End
+""")
+
+
+# ── Generate Logic ────────────────────────────────────────────
+if generate_clicked:
+    with st.spinner("Generating maze & running Tabu Search..."):
+        try:
+            maze = generate_maze(n, seed=seed)
             path, snaps = tabu_search_maze(maze, tabu_size=tabu_size)
             vc = precompute_visited(snaps)
+
             st.session_state.snapshots = snaps
             st.session_state.grid = maze
             st.session_state.vc = vc
             st.session_state.frame_idx = 0
-            ok = '✅ Berhasil!' if path else '❌ Gagal'
+
+            ok = 'Berhasil!' if path else 'Tidak ditemukan'
             st.session_state.info = (
-                f"**{ok}** | Maze {n}×{n} | "
+                f"**{ok}** | Maze {n}x{n} | "
                 f"{len(snaps)} frame | Tabu size: {tabu_size}"
             )
+        except Exception as e:
+            st.error(f"Error: {e}")
+            st.stop()
 
-    st.divider()
-    st.markdown("""
-**Legenda**
-- 🟡 Posisi Sekarang
-- 🟢 Path Aktif
-- 🔴 Node Tabu
-- 🔵 Visited
-- 🟩 Start
-- 🟥 End
-""")
 
-# ── Main Area ─────────────────────────────────────────────────
+# ── 7. Main Area ──────────────────────────────────────────────
+st.title("Tabu Search Maze")
 st.markdown(st.session_state.info)
 
-if st.session_state.snapshots is not None:
-    snaps = st.session_state.snapshots
-    total = len(snaps)
+if st.session_state.snapshots is None:
+    st.info("Atur parameter di sidebar, lalu klik Generate.")
+    st.stop()
 
-    # Playback controls
-    col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 4])
-    with col1:
-        if st.button("⏮ Awal"):
-            st.session_state.frame_idx = 0
-    with col2:
-        if st.button("◀ Prev"):
-            st.session_state.frame_idx = max(0, st.session_state.frame_idx - 1)
-    with col3:
-        if st.button("Next ▶"):
-            st.session_state.frame_idx = min(total - 1, st.session_state.frame_idx + 1)
-    with col4:
-        if st.button("⏭ Akhir"):
-            st.session_state.frame_idx = total - 1
+snaps = st.session_state.snapshots
+grid = st.session_state.grid
+vc = st.session_state.vc
+total = len(snaps)
 
-    # Frame slider
-    frame_idx = st.slider(
-        "Frame",
-        min_value=0,
-        max_value=total - 1,
-        value=st.session_state.frame_idx,
-        key="frame_slider"
-    )
-    st.session_state.frame_idx = frame_idx
+# ── Navigasi Frame ────────────────────────────────────────────
+c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+with c1:
+    if st.button("Awal"):
+        st.session_state.frame_idx = 0
+        st.rerun()
+with c2:
+    if st.button("Prev"):
+        st.session_state.frame_idx = max(0, st.session_state.frame_idx - 1)
+        st.rerun()
+with c3:
+    if st.button("Next"):
+        st.session_state.frame_idx = min(total - 1, st.session_state.frame_idx + 1)
+        st.rerun()
+with c4:
+    if st.button("Akhir"):
+        st.session_state.frame_idx = total - 1
+        st.rerun()
 
-    # Auto-play
-    st.divider()
-    play_col, _ = st.columns([2, 8])
-    with play_col:
-        auto_play = st.button("▶ Auto-Play (animasi)", use_container_width=True)
+new_frame = st.slider(
+    "Frame",
+    min_value=0,
+    max_value=total - 1,
+    value=st.session_state.frame_idx,
+)
+if new_frame != st.session_state.frame_idx:
+    st.session_state.frame_idx = new_frame
+    st.rerun()
 
-    if auto_play:
-        placeholder_img = st.empty()
-        placeholder_stat = st.empty()
-        progress_bar = st.progress(0)
+# ── Auto-Play ─────────────────────────────────────────────────
+st.divider()
+if st.button("Auto-Play", type="secondary"):
+    img_holder = st.empty()
+    stat_holder = st.empty()
+    bar = st.progress(0)
 
-        i = st.session_state.frame_idx
-        while i < total:
-            snap = snaps[i]
-            vc = st.session_state.vc
-            img_bytes = make_png(
-                st.session_state.grid, snap, vc[i], i, total
-            )
-            action = snap['action']
-            c = {'move': 'green', 'backtrack': 'red', 'done': 'navy'}.get(action, 'black')
-
-            placeholder_img.image(img_bytes, use_container_width=False)
-            placeholder_stat.markdown(
-                f"**Aksi:** :{c}[{action.upper()}] | "
-                f"**Path:** {len(snap['path'])} | "
-                f"**Tabu:** {len(snap['tabu_list'])}"
-            )
-            progress_bar.progress((i + 1) / total)
-
-            i = min(i + speed, total - 1)
-            if i >= total - 1:
-                st.session_state.frame_idx = total - 1
-                break
-            time.sleep(0.12)
-
-        st.success("✅ Animasi selesai!")
-
-    else:
-        # Tampilkan frame statis
-        snap = snaps[st.session_state.frame_idx]
-        vc = st.session_state.vc
-        img_bytes = make_png(
-            st.session_state.grid,
-            snap,
-            vc[st.session_state.frame_idx],
-            st.session_state.frame_idx,
-            total
-        )
-
+    i = st.session_state.frame_idx
+    while i < total:
+        snap = snaps[i]
+        img_bytes = make_png(grid, snap, vc[i], i, total)
         action = snap['action']
-        c = {'move': 'green', 'backtrack': 'red', 'done': 'navy'}.get(action, 'black')
-        st.markdown(
+
+        img_holder.image(img_bytes)
+        stat_holder.markdown(
+            f"**Frame:** {i+1}/{total} | "
             f"**Aksi:** {action.upper()} | "
             f"**Path:** {len(snap['path'])} | "
             f"**Tabu:** {len(snap['tabu_list'])}"
         )
-        st.image(img_bytes, use_container_width=False)
+        bar.progress((i + 1) / total)
+
+        if action == 'done':
+            break
+
+        i = min(i + speed, total - 1)
+        time.sleep(0.1)
+
+    st.session_state.frame_idx = i
+    st.success("Animasi selesai!")
 
 else:
-    st.info("👈 Atur parameter di sidebar, lalu klik **Generate** untuk memulai simulasi.")
+    # ── Tampilan Frame Statis ─────────────────────────────────
+    idx = st.session_state.frame_idx
+    snap = snaps[idx]
+    action = snap['action']
+
+    st.markdown(
+        f"**Aksi:** {action.upper()} | "
+        f"**Path:** {len(snap['path'])} | "
+        f"**Tabu:** {len(snap['tabu_list'])} | "
+        f"**Frame:** {idx+1}/{total}"
+    )
+
+    img_bytes = make_png(grid, snap, vc[idx], idx, total)
+    st.image(img_bytes)
