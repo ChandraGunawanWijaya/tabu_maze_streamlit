@@ -1,8 +1,3 @@
-# ============================================================
-#  TABU SEARCH MAZE — Streamlit (MURNI, tanpa heuristik tambahan)
-#  streamlit run tabu_maze_streamlit.py
-# ============================================================
-
 import random, gc, io, time
 import numpy as np
 import matplotlib
@@ -24,7 +19,10 @@ st.markdown("""
 
   .stApp { background: #1a1a1a; color: #888; }
 
-  #MainMenu, footer, header { visibility: hidden; }
+  #MainMenu, footer { visibility: hidden; }
+  header { background-color: rgba(0,0,0,0) !important; }
+
+  .main-title { font-size: 24px; color: #eee; font-weight: 700; margin-bottom: 20px; }
 
   .stButton > button {
     background: transparent;
@@ -51,7 +49,7 @@ st.markdown("""
   .stProgress > div { background: #222 !important; }
   .stProgress > div > div { background: #555 !important; }
 
-  .stCaption, small, .stMarkdown p { font-size: 12px !important; color: #666 !important; }
+  .stCaption, small, .stMarkdown p { font-size: 13px !important; color: #888 !important; }
 
   h2 { font-size: 12px !important; font-weight: 500;
        letter-spacing: 0.2em; color: #777 !important;
@@ -106,13 +104,12 @@ st.markdown("""
   .bstat .val { color: #888; }
   .bstat .hi  { color: #4caf82; }
   .bstat .lo  { color: #c04040; }
+
+  .legend-item { display: inline-block; margin-right: 15px; font-size: 10px; font-family: monospace; }
+  .dot { height: 8px; width: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ═══════════════════════════════════════════════════════════════
-# 1. GENERATE MAZE
-# ═══════════════════════════════════════════════════════════════
 def generate_maze(size, seed):
     n = size if size % 2 == 1 else size + 1
     grid = np.ones((n, n), dtype=np.uint8)
@@ -139,44 +136,17 @@ def generate_maze(size, seed):
     grid[0, 1] = grid[1, 1] = grid[n - 2, n - 2] = grid[n - 1, n - 2] = 0
     return grid
 
-
-# ═══════════════════════════════════════════════════════════════
-# 2. HITUNG MAX_ITER PROPORSIONAL
-# ═══════════════════════════════════════════════════════════════
-
 def compute_max_iter(grid, k: int = 10) -> int:
-    """
-    max_iter = k x |V|
-    |V| = jumlah sel kosong (ruang pencarian aktual).
-    k=10 artinya agent diberi kesempatan mengunjungi
-    setiap sel rata-rata 10 kali — justifikasi defensible
-    secara akademik, tidak arbitrer.
-    """
     V = int((grid == 0).sum())
     return k * V
 
 
-
-# ═══════════════════════════════════════════════════════════════
-# 2. KOMPONEN TABU SEARCH MURNI
-# ═══════════════════════════════════════════════════════════════
-
 def objective(path_len: int, total_step: int,
               alpha: float = 0.6, beta: float = 0.4) -> float:
-    """
-    Objective function murni (Glover 1989).
-    f = alpha * path_length + beta * total_steps
-    Semakin kecil → semakin baik.
-    Tidak ada komponen heuristik jarak ke goal.
-    """
     return alpha * path_len + beta * total_step
 
 
 class Move:
-    """
-    Representasi move sebagai pasangan (from_node, to_node).
-    Tabu list melarang MOVE, bukan node — sesuai TS standar.
-    """
     __slots__ = ('key',)
 
     def __init__(self, from_node: tuple, to_node: tuple):
@@ -191,55 +161,36 @@ class Move:
     def reverse(self) -> 'Move':
         return Move(self.key[1], self.key[0])
 
-
-# ═══════════════════════════════════════════════════════════════
-# 3. TABU SEARCH MURNI — VISUALISASI
-# ═══════════════════════════════════════════════════════════════
 def tabu_search(
     grid,
-    tabu_tenure : int   = 10,
-    max_iter    : int   = 500_000,
-    snap_every  : int   = 20,
-    alpha       : float = 0.6,
-    beta        : float = 0.4,
-    max_solutions: int  = 3,
+    tabu_tenure  : int   = 10,
+    max_iter     : int   = 500_000,
+    snap_every   : int   = 20,
+    alpha        : float = 0.6,
+    beta         : float = 0.4,
+    max_solutions: int   = 3,
+    collect_snaps: bool  = True,   # ← REFACTOR #1: parameter baru
 ):
-    """
-    Tabu Search MURNI untuk visualisasi.
 
-    Komponen TS yang diimplementasikan (Glover 1989):
-    - Tabu list berbasis MOVE dengan tenure FIXED
-    - Objective function: alpha*path_len + beta*total_step
-    - Aspiration criteria: override tabu jika obj < best_obj global
-    - Force move: jika semua neighbor tabu, pilih yang paling lama di tabu list
-    - Multi-pass: setelah goal dicapai, reset dan lanjut cari solusi lebih baik
-
-    TIDAK ADA:
-    - Heuristik jarak (manhattan/euclidean)
-    - Frequency-based penalty (diversification heuristik)
-    - Intensification / BestRegion backtrack
-    - Dynamic tenure
-    """
     rows, cols = grid.shape
     start = (0, 1)
     goal  = (rows - 1, cols - 2)
 
-    current   = start
-    path      = [start]
-    step      = 0
+    current     = start
+    path        = [start]
+    step        = 0
     n_solutions = 0
+    tabu_list      : dict = {}
+    CLEANUP_INTERVAL      = max(50, tabu_tenure * 10)   # ← REFACTOR #2
 
-    # Tabu list: move → step saat ditambahkan
-    tabu_list: dict = {}
-
-    best_path : list  = []
-    best_obj  : float = float('inf')
-    best_found_at_step = 0
+    best_path          : list  = []
+    best_obj           : float = float('inf')
+    best_found_at_step : int   = 0
 
     n_aspiration = 0
     n_force_move = 0
 
-    snaps = []
+    snaps = [] if collect_snaps else None   # ← REFACTOR #1: alokasi kondisional
 
     # ── Fungsi bantu ──────────────────────────────────────────
     def get_neighbors(node):
@@ -258,18 +209,26 @@ def tabu_search(
         tabu_list[move]           = step
         tabu_list[move.reverse()] = step
 
+    # ── REFACTOR #2: Fungsi cleanup tabu_list ─────────────────
+    def cleanup_tabu_list():
+
+        expired = [
+            m for m, added_at in tabu_list.items()
+            if (step - added_at) >= tabu_tenure
+        ]
+        for m in expired:
+            del tabu_list[m]
+
     def aspiration_met(to_node: tuple) -> bool:
-        """
-        Aspiration Criteria (Glover 1989):
-        Move yang tabu boleh dieksekusi jika objective-nya
-        lebih baik dari best_obj global.
-        """
         if best_obj == float('inf'):
             return False
         est_obj = objective(len(path) + 1, step + 1, alpha, beta)
         return est_obj < best_obj
 
+    # ── REFACTOR #1: snap hanya dipanggil jika collect_snaps=True ──
     def snap(action):
+        if not collect_snaps:
+            return
         active_tabu = [
             (m.key, tabu_list[m])
             for m in tabu_list
@@ -295,6 +254,9 @@ def tabu_search(
     # ── Loop utama ────────────────────────────────────────────
     while step < max_iter:
 
+        if step > 0 and step % CLEANUP_INTERVAL == 0:
+            cleanup_tabu_list()
+
         # Cek goal
         if current == goal:
             obj = objective(len(path), step, alpha, beta)
@@ -305,149 +267,11 @@ def tabu_search(
             n_solutions += 1
             snap('done')
 
-            # Berhenti jika sudah cukup solusi
             if n_solutions >= max_solutions:
-                return best_path, snaps
-
-            # Reset untuk mencari solusi lebih baik
-            current = start
-            path    = [start]
-            continue
-
-        neighbors = get_neighbors(current)
-        if not neighbors:
-            snap('stuck')
-            break
-
-        # Kategorikan neighbor
-        free_moves      = []   # move yang tidak tabu
-        tabu_aspiration = []   # move tabu tapi memenuhi aspiration criteria
-        tabu_fallback   = []   # move tabu, tidak aspiration (kandidat force move)
-
-        for nb in neighbors:
-            move = Move(current, nb)
-            if not is_tabu(move):
-                free_moves.append((nb, move))
-            else:
-                if aspiration_met(nb):
-                    tabu_aspiration.append((nb, move))
+                if collect_snaps:
+                    return best_path, snaps
                 else:
-                    tabu_fallback.append((nb, move))
-
-        # Pilih move — TS murni: acak dari kandidat yang tersedia
-        chosen_node = None
-        chosen_move = None
-        action      = None
-
-        if tabu_aspiration:
-            # Aspiration: override tabu jika ada
-            chosen_node, chosen_move = random.choice(tabu_aspiration)
-            action = 'aspiration'
-            n_aspiration += 1
-        elif free_moves:
-            # Pilih acak dari move bebas — murni tanpa skor
-            chosen_node, chosen_move = random.choice(free_moves)
-            action = 'move'
-        elif tabu_fallback:
-            # Force move: semua neighbor tabu → pilih yang paling lama di tabu list
-            oldest = max(
-                tabu_fallback,
-                key=lambda x: (step - tabu_list.get(x[1], 0))
-            )
-            chosen_node, chosen_move = oldest
-            action = 'force_move'
-            n_force_move += 1
-        else:
-            snap('stuck')
-            break
-
-        # Eksekusi move
-        # Force move TIDAK dimasukkan tabu — escape mechanism murni TS
-        if action != 'force_move':
-            add_to_tabu(chosen_move)
-        path.append(chosen_node)
-        current = chosen_node
-        step   += 1
-
-        # Snapshot
-        do_snap = (
-            step % snap_every == 0
-            or action in ('aspiration', 'force_move')
-        )
-        if do_snap:
-            snap(action)
-
-    snap('max_iter')
-    return best_path if best_path else [], snaps
-
-
-# ═══════════════════════════════════════════════════════════════
-# 4. TABU SEARCH MURNI — BATCH EVAL
-# ═══════════════════════════════════════════════════════════════
-def tabu_search_stats(
-    grid,
-    tabu_tenure  : int   = 10,
-    max_iter     : int   = 200_000,
-    alpha        : float = 0.6,
-    beta         : float = 0.4,
-    max_solutions: int   = 3,
-) -> dict:
-    """
-    Versi ringan tabu_search untuk batch eval.
-    Logika TS identik — tidak menyimpan snaps.
-    """
-    rows, cols = grid.shape
-    start = (0, 1)
-    goal  = (rows - 1, cols - 2)
-
-    current     = start
-    path        = [start]
-    step        = 0
-    n_solutions = 0
-
-    tabu_list: dict = {}
-
-    best_path : list  = []
-    best_obj  : float = float('inf')
-    best_found_at_step = 0
-
-    n_aspiration = 0
-    n_force_move = 0
-
-    def get_neighbors(node):
-        r, c = node
-        return [
-            (r + dr, c + dc)
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]
-            if 0 <= r + dr < rows and 0 <= c + dc < cols
-            and grid[r + dr, c + dc] == 0
-        ]
-
-    def is_tabu(move: Move) -> bool:
-        return move in tabu_list and (step - tabu_list[move]) < tabu_tenure
-
-    def add_to_tabu(move: Move):
-        tabu_list[move]           = step
-        tabu_list[move.reverse()] = step
-
-    def aspiration_met(to_node: tuple) -> bool:
-        if best_obj == float('inf'):
-            return False
-        est_obj = objective(len(path) + 1, step + 1, alpha, beta)
-        return est_obj < best_obj
-
-    while step < max_iter:
-
-        if current == goal:
-            obj = objective(len(path), step, alpha, beta)
-            if obj < best_obj:
-                best_obj           = obj
-                best_path          = path.copy()
-                best_found_at_step = step
-            n_solutions += 1
-
-            if n_solutions >= max_solutions:
-                break
+                    break   
 
             current = start
             path    = [start]
@@ -455,6 +279,7 @@ def tabu_search_stats(
 
         neighbors = get_neighbors(current)
         if not neighbors:
+            snap('stuck')
             break
 
         free_moves      = []
@@ -491,6 +316,7 @@ def tabu_search_stats(
             action = 'force_move'
             n_force_move += 1
         else:
+            snap('stuck')
             break
 
         if action != 'force_move':
@@ -499,27 +325,55 @@ def tabu_search_stats(
         current = chosen_node
         step   += 1
 
-    berhasil  = n_solutions > 0
-    final_len = len(best_path) if best_path else len(path)
-    final_obj = round(best_obj, 4) if berhasil else None
-    efisiensi = round(final_len / step * 100, 2) if step > 0 else 0.0
+        do_snap = (
+            step % snap_every == 0
+            or action in ('aspiration', 'force_move')
+        )
+        if do_snap:
+            snap(action)
 
-    return {
-        'berhasil'          : berhasil,
-        'path_len'          : final_len,
-        'total_step'        : step,
-        'objective_value'   : final_obj,
-        'efisiensi'         : efisiensi,
-        'force_move'        : n_force_move,
-        'aspiration'        : n_aspiration,
-        'n_solutions'       : n_solutions,
-        'best_found_at_step': best_found_at_step,
-    }
+    # ── Return ────────────────────────────────────────────────
+    # REFACTOR #1: satu titik return, cabang berdasarkan mode.
+    if collect_snaps:
+        snap('max_iter')
+        return best_path if best_path else [], snaps
+    else:
+        # Kembalikan dict statistik (kompatibel dengan tabu_search_stats lama)
+        snap('max_iter')   # no-op karena collect_snaps=False
+        berhasil  = n_solutions > 0
+        final_len = len(best_path) if best_path else len(path)
+        final_obj = round(best_obj, 4) if berhasil else None
+        efisiensi = round(final_len / step * 100, 2) if step > 0 else 0.0
+        return {
+            'berhasil'          : berhasil,
+            'path_len'          : final_len,
+            'total_step'        : step,
+            'objective_value'   : final_obj,
+            'efisiensi'         : efisiensi,
+            'force_move'        : n_force_move,
+            'aspiration'        : n_aspiration,
+            'n_solutions'       : n_solutions,
+            'best_found_at_step': best_found_at_step,
+        }
 
 
-# ═══════════════════════════════════════════════════════════════
-# 5. RENDER
-# ═══════════════════════════════════════════════════════════════
+# ── Wrapper untuk batch eval (antarmuka lama tetap bisa dipanggil) ─
+def tabu_search_stats(grid, tabu_tenure=10, max_iter=200_000,
+                      alpha=0.6, beta=0.4, max_solutions=3) -> dict:
+    """
+    Thin wrapper: memanggil tabu_search() dengan collect_snaps=False.
+    Dipertahankan agar kode pemanggil lama tidak perlu diubah.
+    """
+    return tabu_search(
+        grid,
+        tabu_tenure   = tabu_tenure,
+        max_iter      = max_iter,
+        alpha         = alpha,
+        beta          = beta,
+        max_solutions = max_solutions,
+        collect_snaps = False,
+    )
+
 C = {
     'wall'   : [0.10, 0.10, 0.10],
     'floor'  : [0.22, 0.22, 0.22],
@@ -570,10 +424,6 @@ def render(grid, snap, best_path_set=None):
     buf.seek(0)
     return buf.read()
 
-
-# ═══════════════════════════════════════════════════════════════
-# 6. STATISTIK HELPER
-# ═══════════════════════════════════════════════════════════════
 def extract_stats_from_snaps(snaps):
     if not snaps:
         return None
@@ -619,10 +469,6 @@ def compute_batch_stats(results):
         'efisiensi'   : stat('efisiensi'),
     }
 
-
-# ═══════════════════════════════════════════════════════════════
-# 7. SESSION STATE
-# ═══════════════════════════════════════════════════════════════
 DEFAULTS = {
     'snaps'        : None,
     'grid'         : None,
@@ -639,18 +485,13 @@ for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-
-# ═══════════════════════════════════════════════════════════════
-# 8. SIDEBAR
-# ═══════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("**tabu maze · murni**")
     st.divider()
 
     maze_size    = st.radio("ukuran", [11, 21, 31, 51, 101, 201, 501, 801], format_func=lambda x: f"{x}×{x}")
     tabu_tenure  = st.slider("tenure (fixed)", 3, 30, 10)
-    max_sol      = st.slider("maks solusi", 1, 10, 3,
-                             help="Berapa kali goal dicapai sebelum berhenti")
+    max_sol      = st.slider("maks solusi", 1, 10, 3)
     snap_every   = st.slider("snap interval", 5, 100, 20)
 
     st.divider()
@@ -666,7 +507,6 @@ with st.sidebar:
     go = st.button("jalankan", type="primary", use_container_width=True)
     st.divider()
 
-    # ── Batch eval ─────────────────────────────────────────────
     st.markdown("**batch eval**")
     n_seeds    = st.slider("jumlah seed", 5, 1000, 20, key="nseed")
     batch_size = st.radio("ukuran maze", [11, 21, 31, 51, 101, 201, 501, 801],
@@ -674,16 +514,14 @@ with st.sidebar:
     batch_ten  = st.slider("tenure batch (fixed)", 3, 40, 15, key="bten")
     batch_sol  = st.slider("maks solusi batch", 1, 10, 3, key="bsol")
 
-    # Info max_iter proporsional
     _n   = batch_size if batch_size % 2 == 1 else batch_size + 1
-    _est = _n * _n  # estimasi kasar sel total
-    _V   = (_est + 1) // 2  # sel kosong ~50% dari grid
+    _est = _n * _n
+    _V   = (_est + 1) // 2
     _mi  = 10 * _V
-    st.caption(f"|V| ≈ {_V:,}  →  max\_iter ≈ {_mi:,}")
+    st.caption(f"|V| ≈ {_V:,}  →  max\\iter ≈ {_mi:,}")
 
-    run_batch  = st.button("jalankan batch", use_container_width=True)
+    run_batch = st.button("jalankan batch", use_container_width=True)
 
-    # ── Evaluasi single run ────────────────────────────────────
     if st.session_state.snaps is not None:
         ev = extract_stats_from_snaps(st.session_state.snaps)
         if ev:
@@ -704,20 +542,19 @@ with st.sidebar:
 """, unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════════════════════
-# 9. RUN SINGLE
-# ═══════════════════════════════════════════════════════════════
 if go:
     st.session_state.autoplay_on = False
     with st.spinner(""):
         grid     = generate_maze(maze_size, st.session_state.seed)
         max_iter = compute_max_iter(grid, k=10)
+        # collect_snaps=True → mode visualisasi (default)
         best_path, snaps = tabu_search(
             grid,
             tabu_tenure   = tabu_tenure,
             max_iter      = max_iter,
             snap_every    = snap_every,
             max_solutions = max_sol,
+            collect_snaps = True,
         )
     st.session_state.update(
         grid      = grid,
@@ -732,22 +569,20 @@ if go:
     )
     st.rerun()
 
-
-# ═══════════════════════════════════════════════════════════════
-# 10. RUN BATCH
-# ═══════════════════════════════════════════════════════════════
 if run_batch:
     prog_bar = st.progress(0, text="menjalankan batch…")
     results  = []
 
     for i, seed in enumerate(range(n_seeds)):
-        grid = generate_maze(batch_size, seed)
+        grid     = generate_maze(batch_size, seed)
         max_iter = compute_max_iter(grid, k=10)
-        ev   = tabu_search_stats(
+        # collect_snaps=False → mode batch ringan
+        ev = tabu_search(
             grid,
             tabu_tenure   = batch_ten,
             max_iter      = max_iter,
             max_solutions = batch_sol,
+            collect_snaps = False,
         )
         results.append({'seed': seed, **ev})
         prog_bar.progress((i + 1) / n_seeds, text=f"seed {seed}/{n_seeds - 1}…")
@@ -760,9 +595,6 @@ if run_batch:
     st.rerun()
 
 
-# ═══════════════════════════════════════════════════════════════
-# 11. TAMPILKAN HASIL BATCH
-# ═══════════════════════════════════════════════════════════════
 if st.session_state.batch_done and st.session_state.batch_stats:
     st.markdown("## hasil batch eval")
 
@@ -832,10 +664,19 @@ if st.session_state.batch_done and st.session_state.batch_stats:
     st.stop()
 
 
-# ═══════════════════════════════════════════════════════════════
-# 12. DISPLAY MAZE
-# ═══════════════════════════════════════════════════════════════
-st.markdown("## tabu search maze")
+st.markdown('<div class="main-title">Tabu Search Maze Solver</div>', unsafe_allow_html=True)
+
+st.markdown("""
+<div style="margin-bottom: 20px;">
+    <div class="legend-item"><span class="dot" style="background-color: #333;"></span>Wall</div>
+    <div class="legend-item"><span class="dot" style="background-color: #4dbb80;"></span>Current Path</div>
+    <div class="legend-item"><span class="dot" style="background-color: #b83838;"></span>Tabu Move</div>
+    <div class="legend-item"><span class="dot" style="background-color: #3380cc;"></span>Best Path Found</div>
+    <div class="legend-item"><span class="dot" style="background-color: #f2f2f2;"></span>Agent</div>
+    <div class="legend-item"><span class="dot" style="background-color: #389461;"></span>Start</div>
+    <div class="legend-item"><span class="dot" style="background-color: #cc2e2e;"></span>Goal</div>
+</div>
+""", unsafe_allow_html=True)
 
 if st.session_state.snaps is None:
     st.markdown('<p class="st-label">← pilih ukuran & jalankan</p>', unsafe_allow_html=True)
@@ -848,7 +689,6 @@ grid     = st.session_state.grid
 total    = len(snaps)
 best_set = set(map(tuple, st.session_state.best_path)) if st.session_state.best_path else None
 
-# ── Kontrol navigasi ──────────────────────────────────────────
 c1, c2, c3, c4, c5, c6 = st.columns([1, 1, 1, 1, 2, 2])
 with c1:
     if st.button("⏮", use_container_width=True):
@@ -895,6 +735,7 @@ bar_slot  = col_l.empty()
 with col_r:
     pill_slot  = st.empty()
     stat_slot  = st.empty()
+    hist_slot  = st.empty()
     tlist_slot = st.empty()
 
 
@@ -925,6 +766,32 @@ def draw_frame(i):
         unsafe_allow_html=True
     )
 
+    history_html = ""
+    for idx in range(i, -1, -1):
+        s_hist   = snaps[idx]
+        act_hist = s_hist['action']
+        pos_hist = s_hist.get('pos', (0, 0))
+        pos_str  = f"({pos_hist[0]},{pos_hist[1]})"
+        is_current = "background: rgba(51,128,204,0.12); border-left: 3px solid #3380cc; font-weight: bold;" if idx == i else ""
+        history_html += (
+            f'<div class="trow" style="padding: 4px 6px; margin-bottom: 2px; display: flex; justify-content: space-between; align-items: center; {is_current}">'
+            f'<span style="font-family: monospace; font-size: 11px; color: #555;">'
+            f'Step {s_hist["step"]} &nbsp;<span style="color: #3380cc; font-weight: 600;">{pos_str}</span>'
+            f'</span>'
+            f'<span class="pill p-{act_hist}" style="font-size: 9px; padding: 1px 5px; margin: 0;">{act_hist.replace("_", " ")}</span>'
+            f'</div>'
+        )
+
+    hist_slot.markdown(
+        f'<div class="tlist">'
+        f'<div class="th">riwayat langkah ({i + 1})</div>'
+        f'<div style="max-height: 250px; overflow-y: auto; padding-right: 3px; margin-top: 5px;">'
+        f'{history_html}'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
     detail     = s.get('tabu_detail', [])
     tenure_now = tabu_tenure
     if detail:
@@ -946,7 +813,6 @@ def draw_frame(i):
         )
 
 
-# ── Autoplay ─────────────────────────────────────────────────
 if st.session_state.autoplay_on:
     i = st.session_state.fidx
     while i < total:
