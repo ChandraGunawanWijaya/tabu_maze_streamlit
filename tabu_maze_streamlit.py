@@ -240,9 +240,11 @@ def tabu_search(
     def is_tabu(move: Move) -> bool:
         return move in tabu_list and (step - tabu_list[move]) < tabu_tenure
 
-    def add_to_tabu(move: Move):
-        tabu_list[move]           = step
-        tabu_list[move.reverse()] = step
+    def add_to_tabu(move):
+        tabu_list[move] = step
+
+        if tabu_tenure > 5:
+            tabu_list[move.reverse()] = step
 
     def cleanup_tabu_list():
         expired = [
@@ -252,10 +254,37 @@ def tabu_search(
         for m in expired:
             del tabu_list[m]
 
-    def aspiration_met(to_node: tuple) -> bool:
+    def manhattan(node, goal):
+        return abs(node[0] - goal[0]) + abs(node[1] - goal[1])
+    
+    def candidate_objective(
+        node,
+        path_len,
+        total_step,
+        goal,
+        alpha=0.5,
+        beta=0.2,
+        gamma=0.3
+    ):
+        return (
+            alpha * path_len +
+            beta * total_step +
+            gamma * manhattan(node, goal)
+        )
+    
+    def aspiration_met(to_node):
         if best_obj == float('inf'):
             return False
-        est_obj = objective(len(path) + 1, step + 1, alpha, beta)
+
+        est_obj = candidate_objective(
+            to_node,
+            len(path)+1,
+            step+1,
+            goal,
+            alpha,
+            beta
+        )
+
         return est_obj < best_obj
 
     def snap(action):
@@ -334,25 +363,49 @@ def tabu_search(
             action = 'aspiration'
             n_aspiration += 1
         elif free_moves:
-            chosen_node, chosen_move = random.choice(free_moves)
+            chosen_node, chosen_move = min(
+            free_moves,
+            key=lambda x: candidate_objective(
+                x[0],
+                len(path)+1,
+                step+1,
+                goal,
+                alpha,
+                beta
+            )
+        )
             action = 'move'
         elif tabu_fallback:
             oldest = max(
                 tabu_fallback,
                 key=lambda x: (step - tabu_list.get(x[1], 0))
             )
-            chosen_node, chosen_move = oldest
+            chosen_node, chosen_move = min(
+            tabu_fallback,
+            key=lambda x: candidate_objective(
+                x[0],
+                len(path)+1,
+                step+1,
+                goal,
+                alpha,
+                beta
+            )
+        )
             action = 'force_move'
             n_force_move += 1
         else:
             snap('stuck')
             break
 
-        if action != 'force_move':
-            add_to_tabu(chosen_move)
         path.append(chosen_node)
+        MAX_PATH_MEMORY = 10000
+        if len(path) > MAX_PATH_MEMORY:
+            path = path[-MAX_PATH_MEMORY:]
         current = chosen_node
-        step   += 1
+
+        add_to_tabu(chosen_move)
+
+        step += 1
 
         do_snap = (
             step % snap_every == 0
@@ -511,8 +564,8 @@ with st.sidebar:
     st.markdown("**TABU MAZE · MURNI**")
     st.divider()
 
-    maze_size    = st.radio("Ukuran", [11, 21, 31, 51, 101, 201, 501, 801], format_func=lambda x: f"{x}×{x}")
-    tabu_tenure  = st.slider("Tenure (Fixed)", 3, 30, 10)
+    maze_size    = st.radio("Ukuran", [11, 21, 31, 51, 101], format_func=lambda x: f"{x}×{x}")
+    tabu_tenure  = st.slider("Tenure", 3, 30, 10)
     max_sol      = st.slider("Maks Solusi", 1, 10, 3)
     snap_every   = st.slider("Snap Interval", 5, 100, 20)
 
@@ -533,7 +586,7 @@ with st.sidebar:
     n_seeds    = st.slider("Jumlah Seed", 5, 1000, 20, key="nseed")
     batch_size = st.radio("Ukuran Maze Batch", [11, 21, 31, 51, 101, 201, 501, 801],
                           format_func=lambda x: f"{x}×{x}", key="bsize")
-    batch_ten  = st.slider("Tenure Batch (Fixed)", 3, 40, 15, key="bten")
+    batch_ten  = st.slider("Tenure Batch", 3, 40, 15, key="bten")
     batch_sol  = st.slider("Maks Solusi Batch", 1, 10, 3, key="bsol")
 
     _n   = batch_size if batch_size % 2 == 1 else batch_size + 1
@@ -848,7 +901,7 @@ if st.session_state.autoplay_on:
             st.session_state.fidx        = i
             break
         i += 1
-        time.sleep(0.06)
+        time.sleep(0.01)
     else:
         st.session_state.autoplay_on = False
         st.session_state.fidx        = total - 1
