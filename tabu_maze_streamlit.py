@@ -846,17 +846,19 @@ def draw_frame(i):
 
 if st.session_state.autoplay_on:
     i = st.session_state.fidx
-    while i < total:
-        draw_frame(i)
-        if snaps[i]['action'] == 'done' and snaps[i].get('n_solutions', 0) >= max_sol:
-            st.session_state.autoplay_on = False
-            st.session_state.fidx        = i
-            break
-        i += 1
+    draw_frame(i)
+
+    if snaps[i]['action'] == 'done' and snaps[i].get('n_solutions', 0) >= max_sol:
+        st.session_state.autoplay_on = False
+        st.session_state.fidx = i
+        st.rerun()
+    elif i < total - 1:
+        st.session_state.fidx = i + 1
         time.sleep(0.06)
+        st.rerun()
     else:
         st.session_state.autoplay_on = False
-        st.session_state.fidx        = total - 1
-    st.rerun()
+        st.session_state.fidx = total - 1
+        st.rerun()
 else:
     draw_frame(st.session_state.fidx)
