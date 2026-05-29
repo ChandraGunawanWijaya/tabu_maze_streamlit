@@ -428,6 +428,11 @@ def render(grid, snap, best_path_set=None):
     img[0, 1]               = C['start']
     img[rows - 1, cols - 2] = C['goal']
 
+    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+        nr, nc = r+dr, c+dc
+        if 0 <= nr < rows and 0 <= nc < cols and grid[nr,nc] == 0:
+            img[nr, nc] = C['current']
+
     sz  = max(4, min(cols // 2, 7))
     # Sesuaikan background frame dengan UI baru
     fig, ax = plt.subplots(figsize=(sz, sz), facecolor='#0e1117')
