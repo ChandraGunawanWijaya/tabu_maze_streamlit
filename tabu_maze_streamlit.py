@@ -428,11 +428,6 @@ def render(grid, snap, best_path_set=None):
     img[0, 1]               = C['start']
     img[rows - 1, cols - 2] = C['goal']
 
-    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
-        nr, nc = r+dr, c+dc
-        if 0 <= nr < rows and 0 <= nc < cols and grid[nr,nc] == 0:
-            img[nr, nc] = C['current']
-
     sz  = max(4, min(cols // 2, 7))
     # Sesuaikan background frame dengan UI baru
     fig, ax = plt.subplots(figsize=(sz, sz), facecolor='#0e1117')
@@ -844,26 +839,19 @@ def draw_frame(i):
         )
 
 
-@st.fragment(run_every=0.05)
-def autoplay_fragment():
-    if not st.session_state.autoplay_on:
-        draw_frame(st.session_state.fidx)
-        return
-
+if st.session_state.autoplay_on:
     i = st.session_state.fidx
-    if i >= total:
-        st.session_state.autoplay_on = False
-        return
-
-    draw_frame(i)
-
-    if snaps[i]['action'] == 'done' and snaps[i].get('n_solutions', 0) >= max_sol:
-        st.session_state.autoplay_on = False
-        st.session_state.fidx = i
-    elif i < total - 1:
-        st.session_state.fidx = i + 1
+    while i < total:
+        draw_frame(i)
+        if snaps[i]['action'] == 'done' and snaps[i].get('n_solutions', 0) >= max_sol:
+            st.session_state.autoplay_on = False
+            st.session_state.fidx        = i
+            break
+        i += 1
+        time.sleep(0.06)
     else:
         st.session_state.autoplay_on = False
-        st.session_state.fidx = total - 1
-
-autoplay_fragment()
+        st.session_state.fidx        = total - 1
+    st.rerun()
+else:
+    draw_frame(st.session_state.fidx)
